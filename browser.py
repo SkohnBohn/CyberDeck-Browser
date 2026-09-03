@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ---------------------------------------------------------------------------
@@ -66,40 +66,107 @@ def resolve_address(text):
         return "https://" + text
     return SEARCH_URL % quote_plus(text)
 
-# JavaScript/CSS injected into every page: forces the solarized/monospace
-# look and permanently hides video, iframe, audio, and common clutter
-# elements (ads / cookie banners / nav bars) where selectors can catch them.
-INJECTED_CSS_TEMPLATE = """
+# Forces the solarized/monospace look on every page. This sets style
+# *properties* directly on each element (el.style.setProperty(...)) rather
+# than injecting a <style> tag or stylesheet: a page's Content-Security-Policy
+# (style-src) blocks stylesheets and <style> tags even when they come from an
+# isolated script world, but it does not block direct DOM style-property
+# mutation — so this is the one approach that reliably lands on every site.
+# A MutationObserver re-applies it to nodes added after the initial pass
+# (e.g. content a page renders client-side after load).
+STYLE_SCRIPT_TEMPLATE = """
 (function() {
-    var style = document.createElement('style');
-    style.id = 'cyberdeck-injected-style';
-    style.textContent = `
-        html, body, p, div, span, li, td, th, a, h1, h2, h3, h4, h5, h6,
-        input, textarea, button, article, section {
-            background-color: %(bg)s !important;
-            color: %(fg)s !important;
-            font-family: %(font)s !important;
+    var BG = %(bg)s, FG = %(fg)s, ACCENT = %(accent)s, FONT = %(font)s;
+    var IMAGES_ENABLED = %(images_enabled)s;
+
+    var HIDE_SELECTOR = [
+        'video', 'iframe', 'audio',
+        '[class*="cookie" i]', '[id*="cookie" i]',
+        '[class*="consent" i]', '[id*="consent" i]',
+        '[class*="banner" i]', '[id*="banner" i]',
+        '[class*="advert" i]', '[id*="advert" i]',
+        '[class*="ad-" i]', '[id*="ad-" i]',
+        '[class*="ads" i]', '[id*="ads" i]',
+        'nav', '[role="navigation"]'
+    ].join(', ');
+    var IMAGE_SELECTOR = 'img, svg, picture, canvas';
+
+    function styleElement(el) {
+        var s = el.style;
+        s.setProperty('background-color', BG, 'important');
+        s.setProperty('background-image', 'none', 'important');
+        s.setProperty('color', FG, 'important');
+        s.setProperty('font-family', FONT, 'important');
+        s.setProperty('border-color', FG, 'important');
+        s.setProperty('box-shadow', 'none', 'important');
+        s.setProperty('text-shadow', 'none', 'important');
+
+        if (el.tagName === 'A') {
+            s.setProperty('color', ACCENT, 'important');
         }
-        a, a:visited {
-            color: %(accent)s !important;
+        if (el.matches(HIDE_SELECTOR)) {
+            s.setProperty('display', 'none', 'important');
         }
-        video, iframe, audio {
-            display: none !important;
+        if (el.matches(IMAGE_SELECTOR)) {
+            // Logos/badges/icons can't be recolored via `color`, so drain
+            // them of hue instead — nothing shows a color outside the
+            // palette unless images are switched off entirely.
+            if (IMAGES_ENABLED) {
+                s.setProperty('filter', 'grayscale(1) contrast(1.1)', 'important');
+            } else {
+                s.setProperty('display', 'none', 'important');
+            }
         }
-        %(images_rule)s
-        [class*="cookie"], [id*="cookie"],
-        [class*="consent"], [id*="consent"],
-        [class*="banner"], [id*="banner"],
-        [class*="advert"], [id*="advert"],
-        [class*="ad-"], [id*="ad-"],
-        [class*="ads"], [id*="ads"],
-        nav, [role="navigation"] {
-            display: none !important;
+    }
+
+    function styleTree(root) {
+        if (root.nodeType !== 1) return;
+        styleElement(root);
+        var descendants = root.querySelectorAll('*');
+        for (var i = 0; i < descendants.length; i++) styleElement(descendants[i]);
+    }
+
+    styleTree(document.documentElement);
+    window.addEventListener('load', function() { styleTree(document.documentElement); });
+
+    new MutationObserver(function(mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            var added = mutations[i].addedNodes;
+            for (var j = 0; j < added.length; j++) styleTree(added[j]);
         }
-    `;
-    document.documentElement.appendChild(style);
+    }).observe(document.documentElement, {childList: true, subtree: true});
 })();
 """
+
+
+def _style_source(config):
+    return STYLE_SCRIPT_TEMPLATE % {
+        "bg": json.dumps(BG),
+        "fg": json.dumps(FG),
+        "accent": json.dumps(ACCENT),
+        "font": json.dumps(FONT_FAMILY),
+        "images_enabled": "true" if config.get("images_enabled", True) else "false",
+    }
+
+
+STYLE_SCRIPT_NAME = "cyberdeck-style"
+
+
+def install_style_script(profile, config):
+    """(Re-)register the solarized/monospace override on the given profile
+    so it is injected into every page this profile loads, regardless of
+    that page's CSP."""
+    collection = profile.scripts()
+    for existing in collection.find(STYLE_SCRIPT_NAME):
+        collection.remove(existing)
+
+    script = QWebEngineScript()
+    script.setName(STYLE_SCRIPT_NAME)
+    script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+    script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+    script.setRunsOnSubFrames(True)
+    script.setSourceCode(_style_source(config))
+    collection.insert(script)
 
 
 def load_config():
@@ -147,31 +214,6 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
-class ResearchPage(QWebEnginePage):
-    """Web page subclass that injects the solarized/monospace/hide-media CSS
-    on every load, and reflects the images on/off setting."""
-
-    def __init__(self, config, profile, parent=None):
-        super().__init__(profile, parent)
-        self.config = config
-        self.loadFinished.connect(self._inject_style)
-
-    def _inject_style(self, ok):
-        if not ok:
-            return
-        images_rule = ""
-        if not self.config.get("images_enabled", True):
-            images_rule = "img, picture, svg { display: none !important; }"
-        script = INJECTED_CSS_TEMPLATE % {
-            "bg": BG,
-            "fg": FG,
-            "accent": ACCENT,
-            "font": FONT_FAMILY,
-            "images_rule": images_rule,
-        }
-        self.runJavaScript(script)
-
-
 class BrowserTab(QWidget):
     """A single tab: address bar + web view."""
 
@@ -192,12 +234,10 @@ class BrowserTab(QWidget):
         self.address_bar.returnPressed.connect(self.navigate_to_address)
         layout.addWidget(self.address_bar)
 
-        # Web view with a page that injects our CSS and a profile that
-        # permanently disables audio (not just hides it via CSS).
-        profile = QWebEngineProfile.defaultProfile()
+        # The default profile carries the style-override script installed
+        # in main() via install_style_script(), so no custom page subclass
+        # is needed here — every page this view loads gets it automatically.
         self.view = QWebEngineView()
-        page = ResearchPage(self.config, profile, self.view)
-        self.view.setPage(page)
 
         # Permanently disable audio output at the QWebEngineView level.
         settings = self.view.settings()
@@ -277,6 +317,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config = load_config()
+        install_style_script(QWebEngineProfile.defaultProfile(), self.config)
 
         self.setWindowTitle("CyberDeck Browser")
         self.setStyleSheet(f"background-color: {BG};")
@@ -384,10 +425,11 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.config, self)
         dialog.exec()
-        # Reload current tab so the new images setting takes effect.
-        current = self.stack.currentWidget()
-        if current is not None:
-            current.view.reload()
+        # Re-install the style script with the new images setting and
+        # reload every open tab so it takes effect immediately.
+        install_style_script(QWebEngineProfile.defaultProfile(), self.config)
+        for tab in self.tabs:
+            tab.view.reload()
 
     # -- Keyboard shortcuts -------------------------------------------------
     def _setup_shortcuts(self):
