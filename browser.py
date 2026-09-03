@@ -6,7 +6,9 @@ Text and images only. No UI clutter. PyQt6 + QWebEngineView.
 
 import json
 import os
+import re
 import sys
+from urllib.parse import quote_plus
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
@@ -38,6 +40,31 @@ FONT_FAMILY = "Courier New, Courier, monospace"
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DEFAULT_CONFIG = {"images_enabled": True}
+
+# DuckDuckGo's HTML-only endpoint: no JavaScript required, minimal markup,
+# no cookie-consent wall, and it doesn't track/personalize like Google —
+# a good match for a text-only, distraction-free browser.
+SEARCH_URL = "https://html.duckduckgo.com/html/?q=%s"
+
+# Matches "looks like a domain/URL" (e.g. "example.com", "localhost:8000",
+# "192.168.1.1/admin") so bare keyword queries can be told apart from
+# addresses without requiring the user to type a scheme.
+_URL_LIKE_RE = re.compile(
+    r"^(localhost)(:\d+)?(/.*)?$"
+    r"|^(\d{1,3}\.){3}\d{1,3}(:\d+)?(/.*)?$"
+    r"|^[\w-]+(\.[\w-]+)+(:\d+)?(/.*)?$"
+)
+
+
+def resolve_address(text):
+    """Turn address-bar text into a URL: pass through real URLs/domains,
+    send anything else to DuckDuckGo as a keyword search."""
+    if "://" in text:
+        return text
+    first_word = text.split()[0] if text.split() else text
+    if " " not in text and _URL_LIKE_RE.match(first_word):
+        return "https://" + text
+    return SEARCH_URL % quote_plus(text)
 
 # JavaScript/CSS injected into every page: forces the solarized/monospace
 # look and permanently hides video, iframe, audio, and common clutter
@@ -189,10 +216,7 @@ class BrowserTab(QWidget):
         text = self.address_bar.text().strip()
         if not text:
             return
-        if "://" not in text:
-            # Treat as a URL if it looks like one, otherwise assume https.
-            text = "https://" + text
-        self.view.setUrl(QUrl(text))
+        self.view.setUrl(QUrl(resolve_address(text)))
 
     def load_url(self, url):
         self.address_bar.setText(url)
