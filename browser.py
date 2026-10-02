@@ -32,21 +32,19 @@ from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngin
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ---------------------------------------------------------------------------
-# Solarized palette, mapped onto the same terminal-UI roles as before.
+# Warm cream/black/gold palette — no blue-grey anywhere. Borders are always
+# either light grey (inactive/structure) or dark yellow (active/emphasis).
 # ---------------------------------------------------------------------------
-BG = "#FDF6E3"          # solarized background
-FG = "#657B83"          # solarized text: structure, inactive, rule lines
-FG_DIM = "#93A1A1"       # solarized base1: dim borders/dividers
-FG_BRIGHT = "#B58900"    # solarized accent/yellow: emphasis, selection, caret
+BG = "#FDF6E3"          # warm cream background
+FG = "#2B2B2B"          # near-black text
+FG_DIM = "#D8D3C2"      # light warm grey: dim borders/dividers
+FG_BRIGHT = "#B58900"   # dark yellow/gold: emphasis, selection, caret
 FONT_FAMILY = '"Courier New", "DejaVu Sans Mono", "Consolas", monospace'
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DEFAULT_CONFIG = {"images_enabled": True}
 
-# DuckDuckGo's HTML-only endpoint: no JavaScript required, minimal markup,
-# no cookie-consent wall, and it doesn't track/personalize like Google —
-# a good match for a text-only, distraction-free browser.
-SEARCH_URL = "https://html.duckduckgo.com/html/?q=%s"
+SEARCH_URL = "https://www.google.com/search?q=%s"
 
 # Matches "looks like a domain/URL" (e.g. "example.com", "localhost:8000",
 # "192.168.1.1/admin") so bare keyword queries can be told apart from
@@ -79,7 +77,7 @@ def resolve_address(text):
 # (e.g. content a page renders client-side after load).
 STYLE_SCRIPT_TEMPLATE = """
 (function() {
-    var BG = %(bg)s, FG = %(fg)s, ACCENT = %(accent)s, FONT = %(font)s;
+    var BG = %(bg)s, FG = %(fg)s, FG_DIM = %(fg_dim)s, ACCENT = %(accent)s, FONT = %(font)s;
     var IMAGES_ENABLED = %(images_enabled)s;
 
     var HIDE_SELECTOR = [
@@ -111,11 +109,10 @@ STYLE_SCRIPT_TEMPLATE = """
         var tag = el.tagName;
 
         s.setProperty('background-color', BG, 'important');
-        s.setProperty('background-image', 'none', 'important');
         s.setProperty('color', FG, 'important');
         s.setProperty('font-family', FONT, 'important');
         s.setProperty('line-height', '1.7', 'important');
-        s.setProperty('border-color', FG, 'important');
+        s.setProperty('border-color', FG_DIM, 'important');
         s.setProperty('border-radius', '0', 'important');
         s.setProperty('box-shadow', 'none', 'important');
         s.setProperty('text-shadow', 'none', 'important');
@@ -137,7 +134,7 @@ STYLE_SCRIPT_TEMPLATE = """
             // with the flat palette — strip it down to a plain box instead.
             s.setProperty('-webkit-appearance', 'none', 'important');
             s.setProperty('appearance', 'none', 'important');
-            s.setProperty('border', '1px solid ' + FG, 'important');
+            s.setProperty('border', '1px solid ' + FG_DIM, 'important');
             s.setProperty('padding', '4px 6px', 'important');
         }
 
@@ -193,6 +190,7 @@ def _style_source(config):
     return STYLE_SCRIPT_TEMPLATE % {
         "bg": json.dumps(BG),
         "fg": json.dumps(FG),
+        "fg_dim": json.dumps(FG_DIM),
         "accent": json.dumps(FG_BRIGHT),
         "font": json.dumps(FONT_FAMILY),
         "images_enabled": "true" if config.get("images_enabled", True) else "false",
@@ -261,11 +259,11 @@ QLineEdit {{
     border: none;
     border-bottom: 2px solid {FG_DIM};
     padding: 6px 4px;
-    selection-background-color: {FG};
+    selection-background-color: {FG_BRIGHT};
     selection-color: {BG};
 }}
 QLineEdit:focus {{
-    border-bottom: 2px solid {FG};
+    border-bottom: 2px solid {FG_BRIGHT};
 }}
 
 QListWidget {{
@@ -279,7 +277,7 @@ QListWidget::item {{
     border-bottom: 1px solid {FG_DIM};
 }}
 QListWidget::item:selected {{
-    background-color: {FG};
+    background-color: {FG_BRIGHT};
     color: {BG};
 }}
 
@@ -290,11 +288,11 @@ QPushButton {{
     padding: 6px;
 }}
 QPushButton:hover {{
-    border: 2px solid {FG};
+    border: 2px solid {FG_BRIGHT};
     color: {FG_BRIGHT};
 }}
 QPushButton:pressed {{
-    background-color: {FG};
+    background-color: {FG_BRIGHT};
     color: {BG};
 }}
 
@@ -310,16 +308,17 @@ QCheckBox {{
 QCheckBox::indicator {{
     width: 14px;
     height: 14px;
-    border: 2px solid {FG};
+    border: 2px solid {FG_DIM};
     background: {BG};
 }}
 QCheckBox::indicator:checked {{
-    background: {FG};
+    background: {FG_BRIGHT};
+    border: 2px solid {FG_BRIGHT};
 }}
 
 QDialog {{
     background-color: {BG};
-    border: 2px solid {FG};
+    border: 2px solid {FG_BRIGHT};
 }}
 
 QScrollBar:vertical {{
@@ -334,7 +333,7 @@ QScrollBar::handle:vertical {{
     border-radius: 0;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {FG};
+    background: {FG_BRIGHT};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
@@ -355,7 +354,7 @@ QScrollBar::handle:horizontal {{
     border-radius: 0;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {FG};
+    background: {FG_BRIGHT};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
@@ -501,10 +500,11 @@ class TabListItemWidget(QWidget):
         self.label.setText(self._format(index, self._title))
 
     def set_selected(self, selected):
-        # Inverted video, the way a real terminal marks the focused line —
-        # a separate widget painted over the list, so it must invert itself
-        # rather than rely on QListWidget's own selection color.
-        bg, fg = (FG, BG) if selected else (BG, FG)
+        # The focused row gets a solid gold block, the way the current nav
+        # item is highlighted in the reference app — a separate widget
+        # painted over the list, so it must invert itself rather than rely
+        # on QListWidget's own selection color.
+        bg, fg = (FG_BRIGHT, BG) if selected else (BG, FG)
         self.setStyleSheet(f"background-color: {bg};")
         self.label.setStyleSheet(f"color: {fg}; background: transparent;")
         self.close_button.setStyleSheet(
