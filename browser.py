@@ -88,7 +88,16 @@ STYLE_SCRIPT_TEMPLATE = """
         '[class*="advert" i]', '[id*="advert" i]',
         '[class*="ad-" i]', '[id*="ad-" i]',
         '[class*="ads" i]', '[id*="ads" i]',
-        'nav', '[role="navigation"]'
+        'nav', '[role="navigation"]',
+        // Google's own search-bar chrome: logo, mic/camera icons, the
+        // "gb_"-prefixed account/apps/settings bar, sign-in link. Google's
+        // markup is obfuscated and changes often, so this is best-effort.
+        'img[alt="Google"]',
+        '[class^="gb_"]', '[class*=" gb_"]',
+        'a[href*="accounts.google.com"]',
+        '[aria-label*="voice" i]', '[aria-label*="Sprachsuche" i]',
+        '[aria-label*="camera" i]', '[aria-label*="search by image" i]',
+        '[aria-label*="Mit dem Bild suchen" i]'
     ].join(', ');
     var IMAGE_SELECTOR = 'img, svg, picture, canvas';
     var FORM_CONTROL_SELECTOR = 'input, select, textarea, button';
@@ -96,13 +105,27 @@ STYLE_SCRIPT_TEMPLATE = """
     // Reading-mode type scale: a page's own small, cramped sizing is
     // exactly what made everything look "tiny" — this replaces it with a
     // calm, consistent hierarchy regardless of what the site shipped.
+    // Only applied to elements that actually hold text: sites like Google
+    // lean on many empty layout div/span wrappers for pixel-precise
+    // positioning, and forcing font-size/line-height onto those (rather
+    // than just the handful of tags that are reliably textual) is what
+    // blew spacer elements up into huge blank gaps.
     var FONT_SIZES = {
         H1: '26px', H2: '21px', H3: '19px', H4: '17px', H5: '16px', H6: '16px'
     };
-    var TEXT_TAGS = [
-        'P', 'LI', 'SPAN', 'DIV', 'TD', 'TH', 'A', 'LABEL', 'BLOCKQUOTE',
+    var ALWAYS_TEXT_TAGS = [
+        'P', 'LI', 'TD', 'TH', 'A', 'LABEL', 'BLOCKQUOTE',
         'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION'
     ];
+    var CONDITIONAL_TEXT_TAGS = ['DIV', 'SPAN'];
+
+    function hasDirectText(el) {
+        var nodes = el.childNodes;
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) return true;
+        }
+        return false;
+    }
 
     function styleElement(el) {
         var s = el.style;
@@ -111,7 +134,6 @@ STYLE_SCRIPT_TEMPLATE = """
         s.setProperty('background-color', BG, 'important');
         s.setProperty('color', FG, 'important');
         s.setProperty('font-family', FONT, 'important');
-        s.setProperty('line-height', '1.7', 'important');
         s.setProperty('border-color', FG_DIM, 'important');
         s.setProperty('border-radius', '0', 'important');
         s.setProperty('box-shadow', 'none', 'important');
@@ -119,8 +141,13 @@ STYLE_SCRIPT_TEMPLATE = """
 
         if (FONT_SIZES[tag]) {
             s.setProperty('font-size', FONT_SIZES[tag], 'important');
-        } else if (TEXT_TAGS.indexOf(tag) !== -1) {
+            s.setProperty('line-height', '1.3', 'important');
+        } else if (
+            ALWAYS_TEXT_TAGS.indexOf(tag) !== -1 ||
+            (CONDITIONAL_TEXT_TAGS.indexOf(tag) !== -1 && hasDirectText(el))
+        ) {
             s.setProperty('font-size', '16px', 'important');
+            s.setProperty('line-height', '1.7', 'important');
         }
 
         if (tag === 'A') {
