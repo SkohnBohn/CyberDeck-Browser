@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CyberDeck Browser — a single-purpose retro-futurist terminal browser.
 
-Monochrome phosphor CRT aesthetic. Text and images only. No UI clutter.
-This machine does one thing. PyQt6 + QWebEngineView.
+Solarized palette, terminal-style chrome. Text and images only. No UI
+clutter. This machine does one thing. PyQt6 + QWebEngineView.
 """
 
 import json
@@ -32,13 +32,12 @@ from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngin
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ---------------------------------------------------------------------------
-# Monochrome phosphor terminal palette — one hue, nothing else. A dedicated
-# machine for one task doesn't get a "theme"; it gets the screen it has.
+# Solarized palette, mapped onto the same terminal-UI roles as before.
 # ---------------------------------------------------------------------------
-BG = "#0A0E0A"          # near-black CRT glass
-FG = "#33FF33"          # phosphor green — the only "color" in the machine
-FG_DIM = "#1B7A1B"      # dim green: structure, inactive, rule lines
-FG_BRIGHT = "#8CFF8C"   # bright green: current selection / caret only
+BG = "#FDF6E3"          # solarized background
+FG = "#657B83"          # solarized text: structure, inactive, rule lines
+FG_DIM = "#93A1A1"       # solarized base1: dim borders/dividers
+FG_BRIGHT = "#B58900"    # solarized accent/yellow: emphasis, selection, caret
 FONT_FAMILY = '"Courier New", "DejaVu Sans Mono", "Consolas", monospace'
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -161,7 +160,7 @@ def _style_source(config):
     return STYLE_SCRIPT_TEMPLATE % {
         "bg": json.dumps(BG),
         "fg": json.dumps(FG),
-        "accent": json.dumps(FG),
+        "accent": json.dumps(FG_BRIGHT),
         "font": json.dumps(FONT_FAMILY),
         "images_enabled": "true" if config.get("images_enabled", True) else "false",
     }
