@@ -89,18 +89,62 @@ STYLE_SCRIPT_TEMPLATE = """
         '[class*="ad-" i]', '[id*="ad-" i]',
         '[class*="ads" i]', '[id*="ads" i]',
         'nav', '[role="navigation"]',
-        // Google's own search-bar chrome: logo, mic/camera icons, the
-        // "gb_"-prefixed account/apps/settings bar, sign-in link. Google's
-        // markup is obfuscated and changes often, so this is best-effort.
         'img[alt="Google"]',
-        '[class^="gb_"]', '[class*=" gb_"]',
-        'a[href*="accounts.google.com"]',
-        '[aria-label*="voice" i]', '[aria-label*="Sprachsuche" i]',
-        '[aria-label*="camera" i]', '[aria-label*="search by image" i]',
-        '[aria-label*="Mit dem Bild suchen" i]'
+        'a[href*="accounts.google.com"]'
     ].join(', ');
     var IMAGE_SELECTOR = 'img, svg, picture, canvas';
     var FORM_CONTROL_SELECTOR = 'input, select, textarea, button';
+
+    // Google has used name="q" on the actual search box input for ~20
+    // years — a far more stable anchor than any of its auto-generated
+    // classnames. Rather than guess at which icon classes to hide, find
+    // that input and strip every *other* element out of its containing
+    // search box, leaving only the raw field — this survives Google
+    // reshuffling or renaming its icon buttons entirely.
+    function isolateSearchInput() {
+        var input = document.querySelector('input[name="q"], textarea[name="q"]');
+        if (!input) return;
+        var container = input.closest('form, [role="search"]') || input.parentElement;
+        (function strip(node) {
+            if (!node || !node.children) return;
+            for (var i = 0; i < node.children.length; i++) {
+                var child = node.children[i];
+                if (child === input || child.contains(input)) {
+                    strip(child);
+                } else {
+                    child.style.setProperty('display', 'none', 'important');
+                }
+            }
+        })(container);
+    }
+
+    // Google's "AI Overview" box has no stable selector to target, so
+    // match it by its own heading text (a short, best-effort list of
+    // locales) and collapse the card around it.
+    var AI_OVERVIEW_LABELS = [
+        'ai overview', 'übersicht mit ki', "vue d'ensemble générée par l'ia",
+        'resumen generado por ia', 'panoramica IA'
+    ];
+    function hideAiOverview() {
+        var all = document.querySelectorAll('h1, h2, h3, h4, div, span');
+        for (var i = 0; i < all.length; i++) {
+            var text = (all[i].textContent || '').trim().toLowerCase();
+            if (AI_OVERVIEW_LABELS.indexOf(text) !== -1) {
+                var card = all[i];
+                // Climb a few levels to the card wrapping the heading, but
+                // never past body — hiding <body>/<html> would blank the
+                // entire page, not just this one box.
+                for (var up = 0; up < 3; up++) {
+                    if (!card.parentElement || card.parentElement === document.body) break;
+                    card = card.parentElement;
+                }
+                if (card !== document.body && card !== document.documentElement) {
+                    card.style.setProperty('display', 'none', 'important');
+                }
+                break;
+            }
+        }
+    }
 
     // Reading-mode type scale: a page's own small, cramped sizing is
     // exactly what made everything look "tiny" — this replaces it with a
@@ -138,6 +182,10 @@ STYLE_SCRIPT_TEMPLATE = """
         s.setProperty('border-radius', '0', 'important');
         s.setProperty('box-shadow', 'none', 'important');
         s.setProperty('text-shadow', 'none', 'important');
+        // display:none on a hidden element removes its own box, but a
+        // still-visible parent can keep a fixed min-height reserved for it
+        // (common in Google's header chrome) — let containers collapse.
+        s.setProperty('min-height', '0', 'important');
 
         if (FONT_SIZES[tag]) {
             s.setProperty('font-size', FONT_SIZES[tag], 'important');
@@ -187,14 +235,22 @@ STYLE_SCRIPT_TEMPLATE = """
         for (var i = 0; i < descendants.length; i++) styleElement(descendants[i]);
     }
 
-    styleTree(document.documentElement);
-    window.addEventListener('load', function() { styleTree(document.documentElement); });
+    function runAll(root) {
+        styleTree(root);
+        isolateSearchInput();
+        hideAiOverview();
+    }
+
+    runAll(document.documentElement);
+    window.addEventListener('load', function() { runAll(document.documentElement); });
 
     new MutationObserver(function(mutations) {
         for (var i = 0; i < mutations.length; i++) {
             var added = mutations[i].addedNodes;
             for (var j = 0; j < added.length; j++) styleTree(added[j]);
         }
+        isolateSearchInput();
+        hideAiOverview();
     }).observe(document.documentElement, {childList: true, subtree: true});
 
     // Best-effort scrollbar restyle: a <style> tag can be blocked by a
