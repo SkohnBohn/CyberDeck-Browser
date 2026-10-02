@@ -11,8 +11,8 @@ import re
 import sys
 from urllib.parse import quote_plus
 
-from PyQt6.QtCore import QRect, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QShortcut
+from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -93,21 +93,54 @@ STYLE_SCRIPT_TEMPLATE = """
         'nav', '[role="navigation"]'
     ].join(', ');
     var IMAGE_SELECTOR = 'img, svg, picture, canvas';
+    var FORM_CONTROL_SELECTOR = 'input, select, textarea, button';
+
+    // Reading-mode type scale: a page's own small, cramped sizing is
+    // exactly what made everything look "tiny" — this replaces it with a
+    // calm, consistent hierarchy regardless of what the site shipped.
+    var FONT_SIZES = {
+        H1: '26px', H2: '21px', H3: '19px', H4: '17px', H5: '16px', H6: '16px'
+    };
+    var TEXT_TAGS = [
+        'P', 'LI', 'SPAN', 'DIV', 'TD', 'TH', 'A', 'LABEL', 'BLOCKQUOTE',
+        'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION'
+    ];
 
     function styleElement(el) {
         var s = el.style;
+        var tag = el.tagName;
+
         s.setProperty('background-color', BG, 'important');
         s.setProperty('background-image', 'none', 'important');
         s.setProperty('color', FG, 'important');
         s.setProperty('font-family', FONT, 'important');
+        s.setProperty('line-height', '1.7', 'important');
         s.setProperty('border-color', FG, 'important');
+        s.setProperty('border-radius', '0', 'important');
         s.setProperty('box-shadow', 'none', 'important');
         s.setProperty('text-shadow', 'none', 'important');
 
-        if (el.tagName === 'A') {
+        if (FONT_SIZES[tag]) {
+            s.setProperty('font-size', FONT_SIZES[tag], 'important');
+        } else if (TEXT_TAGS.indexOf(tag) !== -1) {
+            s.setProperty('font-size', '16px', 'important');
+        }
+
+        if (tag === 'A') {
             s.setProperty('color', ACCENT, 'important');
             s.setProperty('text-decoration', 'underline', 'important');
         }
+
+        if (el.matches(FORM_CONTROL_SELECTOR)) {
+            // Native search/select chrome (rounded "searchfield" boxes,
+            // OS-drawn dropdown arrows) ignores color overrides and clashes
+            // with the flat palette — strip it down to a plain box instead.
+            s.setProperty('-webkit-appearance', 'none', 'important');
+            s.setProperty('appearance', 'none', 'important');
+            s.setProperty('border', '1px solid ' + FG, 'important');
+            s.setProperty('padding', '4px 6px', 'important');
+        }
+
         if (el.matches(HIDE_SELECTOR)) {
             s.setProperty('display', 'none', 'important');
         }
@@ -331,39 +364,6 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
     background: {BG};
 }}
 """
-
-
-class ScanlineOverlay(QWidget):
-    """Static CRT scanline + vignette painted over the whole window.
-
-    Mouse-transparent so it never intercepts clicks — purely a visual skin
-    reinforcing that this is a screen being looked at, not an app window.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-
-        # Horizontal scanlines.
-        scanline = QColor(0, 0, 0, 28)
-        painter.setPen(scanline)
-        for y in range(0, self.height(), 3):
-            painter.drawLine(0, y, self.width(), y)
-
-        # Vignette: darken toward the edges without a radial-gradient
-        # dependency — four overlapping flat bands is enough to read as one.
-        vignette = QColor(0, 0, 0, 90)
-        band = max(self.width(), self.height()) // 14 or 1
-        painter.fillRect(QRect(0, 0, self.width(), band), vignette)
-        painter.fillRect(QRect(0, self.height() - band, self.width(), band), vignette)
-        painter.fillRect(QRect(0, 0, band, self.height()), vignette)
-        painter.fillRect(QRect(self.width() - band, 0, band, self.height()), vignette)
 
 
 class SettingsDialog(QDialog):
@@ -619,20 +619,8 @@ class MainWindow(QMainWindow):
         # Global monospace font for the UI chrome.
         QApplication.instance().setFont(QFont("Courier New", 10))
 
-        # The scanline/vignette overlay belongs on the "screen" (the content
-        # area) only — not on the sidebar, which reads as the deck's own
-        # control panel/bezel rather than something being displayed on glass.
-        self._overlay = ScanlineOverlay(self.stack)
-        self._overlay.setGeometry(self.stack.rect())
-        self._overlay.raise_()
-
         self._setup_shortcuts()
         self.new_tab()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._overlay.setGeometry(self.stack.rect())
-        self._overlay.raise_()
 
     # -- Tab management -------------------------------------------------
     def new_tab(self):
@@ -681,7 +669,6 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(row)
         for i, tab in enumerate(self.tabs):
             tab._list_widget.set_selected(i == row)
-        self._overlay.raise_()
 
     def focus_address_bar(self):
         current = self.stack.currentWidget()
