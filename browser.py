@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""CyberDeck Browser — a minimal, distraction-free research browser.
+"""CyberDeck Browser — a single-purpose retro-futurist terminal browser.
 
-Text and images only. No UI clutter. PyQt6 + QWebEngineView.
+Monochrome phosphor CRT aesthetic. Text and images only. No UI clutter.
+This machine does one thing. PyQt6 + QWebEngineView.
 """
 
 import json
@@ -10,8 +11,8 @@ import re
 import sys
 from urllib.parse import quote_plus
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QFont, QKeySequence, QShortcut
+from PyQt6.QtCore import QRect, Qt, QTimer, QUrl
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,12 +32,14 @@ from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngin
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ---------------------------------------------------------------------------
-# Solarized palette + monospace typewriter aesthetic
+# Monochrome phosphor terminal palette — one hue, nothing else. A dedicated
+# machine for one task doesn't get a "theme"; it gets the screen it has.
 # ---------------------------------------------------------------------------
-BG = "#FDF6E3"
-FG = "#657B83"
-ACCENT = "#B58900"
-FONT_FAMILY = "Courier New, Courier, monospace"
+BG = "#0A0E0A"          # near-black CRT glass
+FG = "#33FF33"          # phosphor green — the only "color" in the machine
+FG_DIM = "#1B7A1B"      # dim green: structure, inactive, rule lines
+FG_BRIGHT = "#8CFF8C"   # bright green: current selection / caret only
+FONT_FAMILY = '"Courier New", "DejaVu Sans Mono", "Consolas", monospace'
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DEFAULT_CONFIG = {"images_enabled": True}
@@ -66,7 +69,8 @@ def resolve_address(text):
         return "https://" + text
     return SEARCH_URL % quote_plus(text)
 
-# Forces the solarized/monospace look on every page. This sets style
+
+# Forces the monochrome terminal look on every page. This sets style
 # *properties* directly on each element (el.style.setProperty(...)) rather
 # than injecting a <style> tag or stylesheet: a page's Content-Security-Policy
 # (style-src) blocks stylesheets and <style> tags even when they come from an
@@ -103,6 +107,7 @@ STYLE_SCRIPT_TEMPLATE = """
 
         if (el.tagName === 'A') {
             s.setProperty('color', ACCENT, 'important');
+            s.setProperty('text-decoration', 'underline', 'important');
         }
         if (el.matches(HIDE_SELECTOR)) {
             s.setProperty('display', 'none', 'important');
@@ -112,7 +117,7 @@ STYLE_SCRIPT_TEMPLATE = """
             // them of hue instead — nothing shows a color outside the
             // palette unless images are switched off entirely.
             if (IMAGES_ENABLED) {
-                s.setProperty('filter', 'grayscale(1) contrast(1.1)', 'important');
+                s.setProperty('filter', 'grayscale(1) contrast(1.2) brightness(0.9)', 'important');
             } else {
                 s.setProperty('display', 'none', 'important');
             }
@@ -135,6 +140,19 @@ STYLE_SCRIPT_TEMPLATE = """
             for (var j = 0; j < added.length; j++) styleTree(added[j]);
         }
     }).observe(document.documentElement, {childList: true, subtree: true});
+
+    // Best-effort scrollbar restyle: a <style> tag can be blocked by a
+    // page's CSP (unlike the direct style mutation above), so this is
+    // allowed to silently fail on strict-CSP sites rather than break
+    // anything else.
+    try {
+        var sb = document.createElement('style');
+        sb.textContent =
+            '::-webkit-scrollbar { width: 12px; height: 12px; background: ' + BG + '; }' +
+            '::-webkit-scrollbar-thumb { background: ' + FG + '; border-radius: 0; }' +
+            '::-webkit-scrollbar-corner { background: ' + BG + '; }';
+        document.documentElement.appendChild(sb);
+    } catch (e) {}
 })();
 """
 
@@ -143,7 +161,7 @@ def _style_source(config):
     return STYLE_SCRIPT_TEMPLATE % {
         "bg": json.dumps(BG),
         "fg": json.dumps(FG),
-        "accent": json.dumps(ACCENT),
+        "accent": json.dumps(FG),
         "font": json.dumps(FONT_FAMILY),
         "images_enabled": "true" if config.get("images_enabled", True) else "false",
     }
@@ -153,7 +171,7 @@ STYLE_SCRIPT_NAME = "cyberdeck-style"
 
 
 def install_style_script(profile, config):
-    """(Re-)register the solarized/monospace override on the given profile
+    """(Re-)register the terminal-monochrome override on the given profile
     so it is injected into every page this profile loads, regardless of
     that page's CSP."""
     collection = profile.scripts()
@@ -187,24 +205,186 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# One global stylesheet for the whole machine: flat rectangles, no
+# border-radius, no gradients, no hover-glow transitions. Inverted-video
+# (background/foreground swap) stands in for "hover" and "selected", the
+# way an actual terminal indicates focus.
+# ---------------------------------------------------------------------------
+APP_STYLESHEET = f"""
+QWidget {{
+    background-color: {BG};
+    color: {FG};
+    font-family: {FONT_FAMILY};
+    font-size: 13px;
+}}
+
+QMainWindow {{
+    background-color: {BG};
+}}
+
+QLineEdit {{
+    background-color: {BG};
+    color: {FG};
+    border: none;
+    border-bottom: 2px solid {FG_DIM};
+    padding: 6px 4px;
+    selection-background-color: {FG};
+    selection-color: {BG};
+}}
+QLineEdit:focus {{
+    border-bottom: 2px solid {FG};
+}}
+
+QListWidget {{
+    background-color: {BG};
+    border: none;
+    border-right: 2px solid {FG_DIM};
+    outline: none;
+}}
+QListWidget::item {{
+    padding: 4px 6px;
+    border-bottom: 1px solid {FG_DIM};
+}}
+QListWidget::item:selected {{
+    background-color: {FG};
+    color: {BG};
+}}
+
+QPushButton {{
+    background-color: {BG};
+    color: {FG};
+    border: 2px solid {FG_DIM};
+    padding: 6px;
+}}
+QPushButton:hover {{
+    border: 2px solid {FG};
+    color: {FG_BRIGHT};
+}}
+QPushButton:pressed {{
+    background-color: {FG};
+    color: {BG};
+}}
+
+QLabel {{
+    background: transparent;
+    color: {FG};
+}}
+
+QCheckBox {{
+    color: {FG};
+    spacing: 8px;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 2px solid {FG};
+    background: {BG};
+}}
+QCheckBox::indicator:checked {{
+    background: {FG};
+}}
+
+QDialog {{
+    background-color: {BG};
+    border: 2px solid {FG};
+}}
+
+QScrollBar:vertical {{
+    background: {BG};
+    width: 14px;
+    border-left: 2px solid {FG_DIM};
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {FG_DIM};
+    min-height: 24px;
+    border-radius: 0;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {FG};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: {BG};
+}}
+
+QScrollBar:horizontal {{
+    background: {BG};
+    height: 14px;
+    border-top: 2px solid {FG_DIM};
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: {FG_DIM};
+    min-width: 24px;
+    border-radius: 0;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {FG};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: {BG};
+}}
+"""
+
+
+class ScanlineOverlay(QWidget):
+    """Static CRT scanline + vignette painted over the whole window.
+
+    Mouse-transparent so it never intercepts clicks — purely a visual skin
+    reinforcing that this is a screen being looked at, not an app window.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+        # Horizontal scanlines.
+        scanline = QColor(0, 0, 0, 28)
+        painter.setPen(scanline)
+        for y in range(0, self.height(), 3):
+            painter.drawLine(0, y, self.width(), y)
+
+        # Vignette: darken toward the edges without a radial-gradient
+        # dependency — four overlapping flat bands is enough to read as one.
+        vignette = QColor(0, 0, 0, 90)
+        band = max(self.width(), self.height()) // 14 or 1
+        painter.fillRect(QRect(0, 0, self.width(), band), vignette)
+        painter.fillRect(QRect(0, self.height() - band, self.width(), band), vignette)
+        painter.fillRect(QRect(0, 0, band, self.height()), vignette)
+        painter.fillRect(QRect(self.width() - band, 0, band, self.height()), vignette)
+
+
 class SettingsDialog(QDialog):
     """Single minimal settings panel: one option, images on/off."""
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle("Settings")
-        self.setStyleSheet(
-            f"background-color: {BG}; color: {FG}; font-family: {FONT_FAMILY};"
-        )
+        self.setWindowTitle("SYSTEM CONFIG")
 
         layout = QVBoxLayout(self)
-        self.images_checkbox = QCheckBox("Load images")
+        header = QLabel("[ SYSTEM CONFIG ]")
+        header.setStyleSheet(f"color: {FG_BRIGHT}; font-weight: bold;")
+        layout.addWidget(header)
+
+        self.images_checkbox = QCheckBox("ENABLE IMAGE RENDERING")
         self.images_checkbox.setChecked(self.config.get("images_enabled", True))
-        self.images_checkbox.setStyleSheet(f"color: {FG}; font-family: {FONT_FAMILY};")
         layout.addWidget(self.images_checkbox)
 
-        close_button = QPushButton("Close")
+        close_button = QPushButton("[ CLOSE ]")
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
 
@@ -215,7 +395,7 @@ class SettingsDialog(QDialog):
 
 
 class BrowserTab(QWidget):
-    """A single tab: address bar + web view."""
+    """A single session: address bar (rendered as a prompt) + web view."""
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -225,14 +405,21 @@ class BrowserTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        prompt_row = QWidget()
+        prompt_layout = QHBoxLayout(prompt_row)
+        prompt_layout.setContentsMargins(6, 0, 0, 0)
+        prompt_layout.setSpacing(0)
+
+        prompt_glyph = QLabel(">")
+        prompt_glyph.setStyleSheet(f"color: {FG_BRIGHT}; font-weight: bold; border: none;")
+        prompt_layout.addWidget(prompt_glyph)
+
         self.address_bar = QLineEdit()
-        self.address_bar.setPlaceholderText("Enter address...")
-        self.address_bar.setStyleSheet(
-            f"background-color: {BG}; color: {FG}; font-family: {FONT_FAMILY};"
-            f"border: 1px solid {FG}; padding: 4px;"
-        )
+        self.address_bar.setPlaceholderText("ENTER ADDRESS OR QUERY_")
         self.address_bar.returnPressed.connect(self.navigate_to_address)
-        layout.addWidget(self.address_bar)
+        prompt_layout.addWidget(self.address_bar)
+
+        layout.addWidget(prompt_row)
 
         # The default profile carries the style-override script installed
         # in main() via install_style_script(), so no custom page subclass
@@ -249,7 +436,7 @@ class BrowserTab(QWidget):
 
         layout.addWidget(self.view)
 
-        self.title = "New Tab"
+        self.title = "NEW SESSION"
         self._on_title_changed_callback = None
 
     def navigate_to_address(self):
@@ -263,7 +450,7 @@ class BrowserTab(QWidget):
         self.view.setUrl(QUrl(url))
 
     def _on_title_changed(self, title):
-        self.title = title if title else "New Tab"
+        self.title = title.upper() if title else "NEW SESSION"
         if self._on_title_changed_callback:
             self._on_title_changed_callback(self.title)
 
@@ -272,25 +459,29 @@ class BrowserTab(QWidget):
 
 
 class TabListItemWidget(QWidget):
-    """Row shown in the vertical tab stack: title label + close button."""
+    """Row shown in the vertical session list: index, title, close glyph.
 
-    def __init__(self, title, on_close, parent=None):
+    Reads like a terminal process list ("01 > TITLE") rather than a browser
+    tab — the selected row inverts instead of taking an accent color.
+    """
+
+    def __init__(self, index, title, on_close, parent=None):
         super().__init__(parent)
+        self.setAutoFillBackground(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
 
-        self.label = QLabel(self._truncate(title))
-        self.label.setStyleSheet(f"color: {FG}; font-family: {FONT_FAMILY};")
+        self.label = QLabel(self._format(index, title))
         layout.addWidget(self.label, stretch=1)
 
-        close_button = QPushButton("x")
-        close_button.setFixedSize(18, 18)
-        close_button.setStyleSheet(
-            f"background-color: {BG}; color: {ACCENT}; font-family: {FONT_FAMILY};"
-            "border: none;"
-        )
-        close_button.clicked.connect(on_close)
-        layout.addWidget(close_button)
+        self.close_button = QPushButton("[X]")
+        self.close_button.setFixedSize(28, 20)
+        self.close_button.clicked.connect(on_close)
+        layout.addWidget(self.close_button)
+
+        self._index = index
+        self._title = title
+        self.set_selected(False)
 
         # --- Tab drag stub -------------------------------------------------
         # Drag is wired up here as a placeholder only: mousePressEvent below
@@ -300,11 +491,30 @@ class TabListItemWidget(QWidget):
         self._drag_start_pos = None
 
     @staticmethod
-    def _truncate(title, max_len=20):
+    def _truncate(title, max_len=18):
         return title if len(title) <= max_len else title[: max_len - 1] + "…"
 
+    def _format(self, index, title):
+        return f"{index:02d} > {self._truncate(title)}"
+
+    def set_index(self, index):
+        self._index = index
+        self.label.setText(self._format(index, self._title))
+
+    def set_selected(self, selected):
+        # Inverted video, the way a real terminal marks the focused line —
+        # a separate widget painted over the list, so it must invert itself
+        # rather than rely on QListWidget's own selection color.
+        bg, fg = (FG, BG) if selected else (BG, FG)
+        self.setStyleSheet(f"background-color: {bg};")
+        self.label.setStyleSheet(f"color: {fg}; background: transparent;")
+        self.close_button.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; border: 1px solid {fg};"
+        )
+
     def set_title(self, title):
-        self.label.setText(self._truncate(title))
+        self._title = title
+        self.label.setText(self._format(self._index, title))
 
     def mousePressEvent(self, event):
         # Tab drag stub: record the starting position only. No QDrag is
@@ -313,14 +523,58 @@ class TabListItemWidget(QWidget):
         super().mousePressEvent(event)
 
 
+class BootScreen(QWidget):
+    """Fake POST/boot sequence shown before the terminal comes up."""
+
+    LINES = [
+        "CYBERDECK OS v0.9.1",
+        "",
+        "BOOT SEQUENCE INITIATED...",
+        "MOUNTING DISPLAY DRIVER............ OK",
+        "MOUNTING NETWORK STACK.............. OK",
+        "MOUNTING INPUT DEVICES.............. OK",
+        "LOADING TERMINAL SHELL.............. OK",
+        "",
+        "> READY_",
+    ]
+
+    def __init__(self, on_done, parent=None):
+        super().__init__(parent)
+        self._on_done = on_done
+        self.setStyleSheet(f"background-color: {BG};")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.addStretch()
+
+        self._label = QLabel("")
+        self._label.setStyleSheet(f"color: {FG}; font-size: 14px;")
+        layout.addWidget(self._label)
+        layout.addStretch()
+
+        self._shown_lines = []
+        self._line_index = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._advance)
+        self._timer.start(180)
+
+    def _advance(self):
+        if self._line_index >= len(self.LINES):
+            self._timer.stop()
+            QTimer.singleShot(500, self._on_done)
+            return
+        self._shown_lines.append(self.LINES[self._line_index])
+        self._label.setText("\n".join(self._shown_lines))
+        self._line_index += 1
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config = load_config()
         install_style_script(QWebEngineProfile.defaultProfile(), self.config)
 
-        self.setWindowTitle("CyberDeck Browser")
-        self.setStyleSheet(f"background-color: {BG};")
+        self.setWindowTitle("CYBERDECK // TERMINAL")
         self.resize(1100, 700)
 
         central = QWidget()
@@ -329,40 +583,35 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # --- Left vertical tab stack --------------------------------------
+        # --- Left vertical session stack ------------------------------------
         left_panel = QWidget()
-        left_panel.setFixedWidth(200)
-        left_panel.setStyleSheet(f"background-color: {BG}; border-right: 1px solid {FG};")
+        left_panel.setFixedWidth(220)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
 
-        self.tab_list = QListWidget()
-        self.tab_list.setStyleSheet(
-            f"background-color: {BG}; border: none; font-family: {FONT_FAMILY};"
+        panel_header = QLabel("[ SESSIONS ]")
+        panel_header.setStyleSheet(
+            f"color: {FG_BRIGHT}; font-weight: bold; padding: 6px; "
+            f"border-right: 2px solid {FG_DIM}; border-bottom: 2px solid {FG_DIM};"
         )
+        left_layout.addWidget(panel_header)
+
+        self.tab_list = QListWidget()
         self.tab_list.currentRowChanged.connect(self._on_tab_selected)
         left_layout.addWidget(self.tab_list, stretch=1)
 
-        new_tab_button = QPushButton("+ New Tab")
-        new_tab_button.setStyleSheet(
-            f"background-color: {BG}; color: {ACCENT}; font-family: {FONT_FAMILY};"
-            f"border-top: 1px solid {FG}; padding: 6px;"
-        )
+        new_tab_button = QPushButton("[ + NEW SESSION ]")
         new_tab_button.clicked.connect(self.new_tab)
         left_layout.addWidget(new_tab_button)
 
-        settings_button = QPushButton("Settings")
-        settings_button.setStyleSheet(
-            f"background-color: {BG}; color: {FG}; font-family: {FONT_FAMILY};"
-            "border: none; padding: 6px;"
-        )
+        settings_button = QPushButton("[ CONFIG ]")
         settings_button.clicked.connect(self.open_settings)
         left_layout.addWidget(settings_button)
 
         root_layout.addWidget(left_panel)
 
-        # --- Stacked tab content area --------------------------------------
+        # --- Stacked session content area ------------------------------------
         self.stack = QStackedWidget()
         root_layout.addWidget(self.stack, stretch=1)
 
@@ -371,14 +620,26 @@ class MainWindow(QMainWindow):
         # Global monospace font for the UI chrome.
         QApplication.instance().setFont(QFont("Courier New", 10))
 
+        # The scanline/vignette overlay belongs on the "screen" (the content
+        # area) only — not on the sidebar, which reads as the deck's own
+        # control panel/bezel rather than something being displayed on glass.
+        self._overlay = ScanlineOverlay(self.stack)
+        self._overlay.setGeometry(self.stack.rect())
+        self._overlay.raise_()
+
         self._setup_shortcuts()
         self.new_tab()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._overlay.setGeometry(self.stack.rect())
+        self._overlay.raise_()
 
     # -- Tab management -------------------------------------------------
     def new_tab(self):
         tab = BrowserTab(self.config)
         item = QListWidgetItem()
-        widget = TabListItemWidget(tab.title, lambda t=tab: self.close_tab(t))
+        widget = TabListItemWidget(len(self.tabs) + 1, tab.title, lambda t=tab: self.close_tab(t))
         item.setSizeHint(widget.sizeHint())
 
         self.tab_list.addItem(item)
@@ -405,6 +666,11 @@ class MainWindow(QMainWindow):
         self.stack.removeWidget(tab)
         self.tabs.remove(tab)
         tab.deleteLater()
+        self._renumber_tabs()
+
+    def _renumber_tabs(self):
+        for i, tab in enumerate(self.tabs, start=1):
+            tab._list_widget.set_index(i)
 
     def close_current_tab(self):
         current = self.stack.currentWidget()
@@ -414,6 +680,9 @@ class MainWindow(QMainWindow):
     def _on_tab_selected(self, row):
         if 0 <= row < len(self.tabs):
             self.stack.setCurrentIndex(row)
+        for i, tab in enumerate(self.tabs):
+            tab._list_widget.set_selected(i == row)
+        self._overlay.raise_()
 
     def focus_address_bar(self):
         current = self.stack.currentWidget()
@@ -447,8 +716,21 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLESHEET)
+
     window = MainWindow()
-    window.show()
+
+    boot = BootScreen(on_done=window.show)
+    boot.setWindowTitle("CYBERDECK // TERMINAL")
+    boot.resize(600, 400)
+    boot.show()
+
+    def finish_boot():
+        boot.close()
+        window.show()
+
+    boot._on_done = finish_boot
+
     sys.exit(app.exec())
 
 
